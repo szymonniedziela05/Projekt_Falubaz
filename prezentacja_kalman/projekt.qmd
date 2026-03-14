@@ -1,0 +1,602 @@
+---
+title: "Liniowy i nieliniowy filtr Kalmana"
+subtitle: "Teoria, implementacja i przykłady działania"
+author:
+  - "Szymon Niedziela"
+  - "Maksymilian Kazoń"
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    incremental: true
+    center: false
+    code-overflow: wrap
+    code-copy: true
+    smaller: false
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Wprowadzenie
+
+## Cel prezentacji
+
+Celem prezentacji jest pokazanie:
+
+- czym jest filtr Kalmana,
+- jak definiuje się model liniowy i nieliniowy,
+- jak wygląda implementacja w Pythonie,
+- gdzie stosuje się filtr Kalmana,
+- jak działają przykładowe symulacje.
+
+## Problem estymacji stanu
+
+W wielu zadaniach inżynierskich chcemy znać **stan układu** w kolejnych chwilach czasu, ale:
+
+- nie obserwujemy go bezpośrednio,
+- pomiary są zaszumione,
+- model matematyczny nie jest idealny.
+
+Filtr Kalmana łączy:
+
+- **model dynamiki układu**
+- oraz **pomiar**
+
+aby uzyskać lepszą estymację niż sam pomiar.
+
+## Intuicja działania
+
+Filtr działa w dwóch fazach:
+
+1. **Predykcja**  
+   przewidujemy, gdzie układ powinien być na podstawie modelu.
+
+2. **Korekcja**  
+   poprawiamy przewidywanie za pomocą nowego pomiaru.
+
+To właśnie ten schemat:  
+**model + pomiar + niepewność = estymata stanu**
+
+# Model liniowy
+
+## Liniowy model stanu
+
+W klasycznym, dyskretnym modelu liniowym zapisujemy układ jako:
+
+$$
+x_k = A x_{k-1} + B u_k + w_k
+$$
+
+$$
+z_k = H x_k + v_k
+$$
+
+gdzie:
+
+- $x_k$ — wektor stanu,
+- $z_k$ — wektor pomiaru,
+- $A$ — macierz przejścia stanu,
+- $B$ — macierz sterowania,
+- $u_k$ — wejście sterujące,
+- $H$ — macierz obserwacji,
+- $w_k$ — szum procesu,
+- $v_k$ — szum pomiaru.
+
+## Znaczenie macierzy Q i R
+
+Zakładamy zwykle:
+
+$$
+w_k \sim \mathcal{N}(0,Q), \qquad v_k \sim \mathcal{N}(0,R)
+$$
+
+gdzie:
+
+- $Q$ opisuje niepewność modelu,
+- $R$ opisuje niepewność pomiaru.
+
+Interpretacja:
+
+- większe $Q$ -> mniejsze zaufanie do modelu,
+- większe $R$ -> mniejsze zaufanie do pomiaru.
+
+# Liniowy filtr Kalmana
+
+## Predykcja
+
+W fazie predykcji liczymy:
+
+$$
+\hat{x}_{k|k-1} = A \hat{x}_{k-1|k-1}
+$$
+
+$$
+P_{k|k-1} = A P_{k-1|k-1} A^T + Q
+$$
+
+gdzie:
+
+- $\hat{x}_{k|k-1}$ — przewidziany stan,
+- $P_{k|k-1}$ — przewidziana macierz kowariancji błędu.
+
+## Korekcja
+
+Po otrzymaniu pomiaru $z_k$ liczymy:
+
+$$
+K_k = P_{k|k-1} H^T \left( H P_{k|k-1} H^T + R \right)^{-1}
+$$
+
+$$
+\hat{x}_{k|k} = \hat{x}_{k|k-1} + K_k \left(z_k - H \hat{x}_{k|k-1}\right)
+$$
+
+$$
+P_{k|k} = (I - K_k H) P_{k|k-1}
+$$
+
+gdzie $K_k$ to **wzmocnienie Kalmana**.
+
+## Interpretacja wzmocnienia Kalmana
+
+Wzmocnienie Kalmana decyduje:
+
+- jak mocno ufamy pomiarowi,
+- jak mocno ufamy modelowi.
+
+Jeśli pomiar jest bardzo dokładny, korekcja jest silniejsza.  
+Jeśli pomiar jest słaby, filtr bardziej ufa modelowi.
+
+# Implementacja w Pythonie
+
+## Biblioteki
+
+Do prezentacji i symulacji wystarczą:
+
+- `numpy` — obliczenia macierzowe,
+- `matplotlib` — wykresy.
+
+Opcjonalnie można użyć też biblioteki `FilterPy`, która udostępnia gotowe klasy do filtrów Kalmana, w tym EKF. W tej prezentacji implementujemy jednak algorytm samodzielnie, żeby pokazać jego logikę.  
+
+## Import bibliotek
+
+```{python}
+#| label: setup
+import numpy as np
+import matplotlib.pyplot as plt
+
+np.random.seed(42)
+plt.rcParams["figure.figsize"] = (10, 5)
+```
+
+# Symulacja liniowa
+
+## Założenia przykładu liniowego
+
+Rozważamy ruch 1D.
+
+Wektor stanu:
+
+$$
+x_k =
+\begin{bmatrix}
+pozycja \\
+prędkość
+\end{bmatrix}
+$$
+
+Pomiar dotyczy tylko pozycji.
+
+Model ma postać:
+
+$$
+x_k = A x_{k-1} + w_k,
+\qquad
+z_k = H x_k + v_k
+$$
+
+## Generowanie danych
+
+```{python}
+#| label: linear-data
+dt = 1.0
+n = 60
+
+A = np.array([
+    [1, dt],
+    [0, 1]
+])
+
+H = np.array([[1, 0]])
+
+Q = np.array([
+    [0.05, 0.0],
+    [0.0, 0.02]
+])
+
+R = np.array([[4.0]])
+
+x_true = np.zeros((n, 2))
+z = np.zeros(n)
+
+x_true[0] = np.array([0.0, 1.0])
+
+for k in range(1, n):
+    w = np.random.multivariate_normal(mean=[0, 0], cov=Q)
+    x_true[k] = A @ x_true[k - 1] + w
+
+for k in range(n):
+    v = np.random.normal(0, np.sqrt(R[0, 0]))
+    z[k] = (H @ x_true[k])[0] + v
+```
+
+## Własna implementacja liniowego filtru Kalmana
+
+```{python}
+#| label: linear-kf
+def kalman_filter_linear(z, A, H, Q, R, x0, P0):
+    n = len(z)
+    state_dim = x0.shape[0]
+
+    x_est = np.zeros((n, state_dim))
+    P_hist = np.zeros((n, state_dim, state_dim))
+
+    x = x0.copy()
+    P = P0.copy()
+
+    for k in range(n):
+        # predykcja
+        x_pred = A @ x
+        P_pred = A @ P @ A.T + Q
+
+        # korekcja
+        y = np.array([z[k]]) - H @ x_pred
+        S = H @ P_pred @ H.T + R
+        K = P_pred @ H.T @ np.linalg.inv(S)
+
+        x = x_pred + K @ y
+        P = (np.eye(state_dim) - K @ H) @ P_pred
+
+        x_est[k] = x
+        P_hist[k] = P
+
+    return x_est, P_hist
+
+
+x0 = np.array([0.0, 0.0])
+P0 = np.array([
+    [10.0, 0.0],
+    [0.0, 10.0]
+])
+
+x_est, P_hist = kalman_filter_linear(z, A, H, Q, R, x0, P0)
+```
+
+## Wyniki symulacji liniowej
+
+```{python}
+#| label: linear-plot
+t = np.arange(n)
+
+plt.plot(t, x_true[:, 0], label="Prawdziwa pozycja")
+plt.scatter(t, z, s=18, label="Pomiary zaszumione")
+plt.plot(t, x_est[:, 0], label="Estymata KF")
+plt.xlabel("krok")
+plt.ylabel("pozycja")
+plt.title("Liniowy filtr Kalmana - estymacja położenia")
+plt.legend()
+plt.grid(True)
+plt.show()
+```
+
+## Wniosek z przykładu liniowego
+
+Na wykresie powinniśmy zobaczyć, że:
+
+- pomiary są rozrzucone przez szum,
+- estymata filtru jest znacznie gładsza,
+- filtr dobrze odtwarza trend ruchu obiektu.
+
+# Zastosowania
+
+## Gdzie stosuje się filtr Kalmana
+
+Typowe zastosowania:
+
+- GPS i nawigacja,
+- śledzenie obiektów,
+- radar i systemy sterowania,
+- przetwarzanie sygnałów,
+- robotyka,
+- estymacja trajektorii ruchu.
+
+## Zastosowanie w pracy źródłowej
+
+W pracy Karola Niewiadomskiego jednym z głównych zastosowań jest odszumianie pomiarów GPS oraz symulacje ruchu obiektu. To jest bardzo dobry przykład praktyczny, bo łączy teorię z realnymi, zaszumionymi danymi.
+
+# Model nieliniowy
+
+## Dlaczego potrzebny jest model nieliniowy
+
+Nie wszystkie układy da się dobrze opisać liniowo.
+
+Często:
+
+- równanie stanu jest nieliniowe,
+- albo pomiar jest nieliniowy.
+
+Przykład:
+- mierzymy odległość i kąt do obiektu,
+- a nie jego współrzędne $(x,y)$ bezpośrednio.
+
+## Nieliniowy model stanu
+
+Model nieliniowy zapisujemy jako:
+
+$$
+x_k = f(x_{k-1}) + w_k
+$$
+
+$$
+z_k = h(x_k) + v_k
+$$
+
+gdzie:
+
+- $f$ — nieliniowa funkcja przejścia stanu,
+- $h$ — nieliniowa funkcja pomiaru.
+
+# Extended Kalman Filter
+
+## Idea EKF
+
+Klasyczny filtr Kalmana działa dla modeli liniowych.
+
+Dla modeli nieliniowych stosujemy **Extended Kalman Filter (EKF)**, który:
+
+- linearyzuje model lokalnie,
+- wykorzystuje macierze Jacobiego,
+- zachowuje schemat:
+  - predykcja,
+  - korekcja.
+
+## Jacobiany w EKF
+
+Dla funkcji:
+
+$$
+x_k = f(x_{k-1}) + w_k, \qquad z_k = h(x_k) + v_k
+$$
+
+zamiast stałych macierzy używamy lokalnych przybliżeń:
+
+$$
+F_k = \frac{\partial f}{\partial x}, \qquad
+H_k = \frac{\partial h}{\partial x}
+$$
+
+obliczanych w aktualnym punkcie pracy.
+
+# Symulacja nieliniowa
+
+## Założenia przykładu EKF
+
+Rozważamy ruch obiektu w 2D.
+
+Stan:
+
+$$
+x_k =
+\begin{bmatrix}
+x \\
+y \\
+v_x \\
+v_y
+\end{bmatrix}
+$$
+
+Pomiar jest nieliniowy i zawiera:
+
+- odległość od początku układu,
+- kąt.
+
+## Generowanie danych dla EKF
+
+```{python}
+#| label: ekf-data
+np.random.seed(123)
+
+dt = 1.0
+n2 = 80
+
+F = np.array([
+    [1, 0, dt, 0],
+    [0, 1, 0, dt],
+    [0, 0, 1,  0],
+    [0, 0, 0,  1]
+])
+
+Q_ekf = np.diag([0.02, 0.02, 0.01, 0.01])
+R_ekf = np.diag([4.0, (np.deg2rad(2))**2])
+
+x_true_ekf = np.zeros((n2, 4))
+z_ekf = np.zeros((n2, 2))
+
+x_true_ekf[0] = np.array([0.0, 0.0, 1.2, 0.8])
+
+for k in range(1, n2):
+    w = np.random.multivariate_normal(np.zeros(4), Q_ekf)
+    x_true_ekf[k] = F @ x_true_ekf[k-1] + w
+
+for k in range(n2):
+    px, py, vx, vy = x_true_ekf[k]
+    rng = np.sqrt(px**2 + py**2)
+    ang = np.arctan2(py, px)
+    noise = np.random.multivariate_normal(np.zeros(2), R_ekf)
+    z_ekf[k] = np.array([rng, ang]) + noise
+```
+
+## Funkcja pomiaru i Jacobian
+
+```{python}
+#| label: ekf-functions
+def h_nonlinear(x):
+    px, py, vx, vy = x
+    r = np.sqrt(px**2 + py**2)
+    theta = np.arctan2(py, px)
+    return np.array([r, theta])
+
+
+def jacobian_h(x):
+    px, py, vx, vy = x
+    r2 = px**2 + py**2
+    r2 = max(r2, 1e-9)
+    r = np.sqrt(r2)
+
+    return np.array([
+        [px / r,        py / r,        0.0, 0.0],
+        [-py / r2,      px / r2,       0.0, 0.0]
+    ])
+
+
+def wrap_angle(a):
+    return (a + np.pi) % (2 * np.pi) - np.pi
+```
+
+## Implementacja EKF
+
+```{python}
+#| label: ekf-code
+def extended_kalman_filter(z, F, Q, R, x0, P0):
+    n = len(z)
+    dim_x = len(x0)
+
+    x_est = np.zeros((n, dim_x))
+    x = x0.copy()
+    P = P0.copy()
+
+    for k in range(n):
+        # predykcja
+        x_pred = F @ x
+        P_pred = F @ P @ F.T + Q
+
+        # linearyzacja pomiaru
+        Hk = jacobian_h(x_pred)
+
+        # innowacja
+        y = z[k] - h_nonlinear(x_pred)
+        y[1] = wrap_angle(y[1])
+
+        # korekcja
+        S = Hk @ P_pred @ Hk.T + R
+        K = P_pred @ Hk.T @ np.linalg.inv(S)
+
+        x = x_pred + K @ y
+        P = (np.eye(dim_x) - K @ Hk) @ P_pred
+
+        x_est[k] = x
+
+    return x_est
+
+
+r0, th0 = z_ekf[0]
+x0_ekf = np.array([
+    r0 * np.cos(th0),
+    r0 * np.sin(th0),
+    0.0,
+    0.0
+])
+
+P0_ekf = np.diag([10.0, 10.0, 2.0, 2.0])
+
+x_est_ekf = extended_kalman_filter(z_ekf, F, Q_ekf, R_ekf, x0_ekf, P0_ekf)
+
+meas_xy = np.column_stack([
+    z_ekf[:, 0] * np.cos(z_ekf[:, 1]),
+    z_ekf[:, 0] * np.sin(z_ekf[:, 1])
+])
+```
+
+## Wyniki symulacji EKF
+
+```{python}
+#| label: ekf-plot
+plt.plot(x_true_ekf[:, 0], x_true_ekf[:, 1], label="Prawdziwa trajektoria")
+plt.scatter(meas_xy[:, 0], meas_xy[:, 1], s=15, label="Pomiary nieliniowe")
+plt.plot(x_est_ekf[:, 0], x_est_ekf[:, 1], label="Estymata EKF")
+plt.xlabel("x")
+plt.ylabel("y")
+plt.title("Extended Kalman Filter - trajektoria 2D")
+plt.legend()
+plt.grid(True)
+plt.axis("equal")
+plt.show()
+```
+
+## Wniosek z przykładu EKF
+
+W modelu nieliniowym:
+
+- same pomiary są trudniejsze do interpretacji,
+- EKF lokalnie linearyzuje problem,
+- pozwala mimo to uzyskać dobrą estymację trajektorii.
+
+# Biblioteki i gotowe narzędzia
+
+## Biblioteki Python, które można wymienić
+
+W prezentacji warto powiedzieć, że implementację można robić:
+
+- samodzielnie w `numpy`,
+- wizualizacje w `matplotlib`,
+- opcjonalnie z gotowymi bibliotekami do filtracji, np. `FilterPy`.
+
+## Dlaczego pokazujemy własny kod
+
+Własna implementacja jest dobra na prezentację, bo pokazuje:
+
+- skąd biorą się wszystkie wzory,
+- jak wygląda predykcja,
+- jak wygląda korekcja,
+- jaką rolę pełnią $Q$, $R$, $P$ i $K$.
+
+# Ograniczenia i rozwinięcia
+
+## Ograniczenia klasycznego podejścia
+
+Trzeba pamiętać, że:
+
+- filtr działa dobrze tylko przy sensownym modelu,
+- zły dobór $Q$ i $R$ pogarsza wyniki,
+- EKF opiera się na linearyzacji lokalnej,
+- przy silnej nieliniowości mogą być potrzebne inne metody.
+
+## Możliwe rozwinięcia
+
+Dalsze kierunki:
+
+- Unscented Kalman Filter,
+- filtry cząsteczkowe,
+- metody odporne na niepewność modelu,
+- estymacja parametrów układu.
+
+# Podsumowanie
+
+## Wnioski końcowe
+
+- Filtr Kalmana jest rekurencyjną metodą estymacji stanu.
+- Wersja liniowa działa dla modeli liniowych.
+- Wersja nieliniowa EKF wykorzystuje linearyzację i Jacobiany.
+- Metoda ma bardzo szerokie zastosowania praktyczne.
+- Python i Quarto pozwalają połączyć teorię, implementację i wizualizację w jednej prezentacji.
+
+# Bibliografia
+
+## Literatura
+
+- Karol Niewiadomski, *Liniowe i nieliniowe filtry Kalmana*
+- Chui, Chen, *Kalman Filtering with Real-Time Applications*
+- Petersen, Savkin, *Robust Kalman Filtering for Signals and Systems with Large Uncertainties*

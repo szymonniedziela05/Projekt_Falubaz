@@ -1,0 +1,10 @@
+project:
+  type: default
+  title: "Filtr Kalmana"
+  render:
+    - projekt.qmd
+  output-dir: _output
+  execute-dir: project
+
+execute:
+  freeze: auto
