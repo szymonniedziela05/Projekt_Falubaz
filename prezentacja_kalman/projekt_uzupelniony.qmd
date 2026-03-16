@@ -1,0 +1,963 @@
+---
+title: "Liniowy i nieliniowy filtr Kalmana"
+author:
+  - "Szymon Niedziela"
+  - "Maksymilian Kazoń"
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    incremental: true
+    center: false
+    code-overflow: wrap
+    code-copy: true
+    smaller: true
+    scrollable: true
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Wprowadzenie
+
+## Cel prezentacji
+
+Celem prezentacji jest pokazanie:
+
+- czym jest filtr Kalmana,
+- jak działa model liniowy i nieliniowy,
+- kiedy wystarcza zwykły KF, a kiedy potrzebny jest EKF,
+- jak wygląda implementacja w Pythonie,
+- jak wykorzystać te idee w projekcie **Falubaz**.
+
+## Problem estymacji stanu
+
+W wielu zadaniach inżynierskich chcemy znać **stan układu** w kolejnych chwilach czasu, ale:
+
+- nie obserwujemy go bezpośrednio,
+- pomiary są zaszumione,
+- model matematyczny nie jest idealny,
+- czasem część informacji chwilowo zanika.
+
+Filtr Kalmana łączy:
+
+- **model dynamiki układu**,
+- **pomiar**
+
+aby uzyskać lepszą estymację niż sam pomiar.
+
+## Intuicja działania
+
+Filtr działa w dwóch fazach:
+
+1. **Predykcja** — przewidujemy, gdzie układ powinien być na podstawie modelu.
+2. **Korekcja** — poprawiamy przewidywanie za pomocą nowego pomiaru.
+
+Najkrócej:
+
+**model + pomiar + niepewność = estymata stanu**
+
+## Co tak naprawdę robi filtr Kalmana
+
+Najważniejsza idea jest bardzo prosta:
+
+- model mówi, gdzie obiekt **powinien** się znaleźć,
+- pomiar mówi, gdzie obiekt **wydaje się** być,
+- filtr Kalmana wyznacza kompromis między tymi dwiema informacjami.
+
+Dzięki temu estymata jest zwykle:
+
+- dokładniejsza niż sam pomiar,
+- stabilniejsza niż surowe dane,
+- możliwa do wyznaczania **na bieżąco**.
+
+## Dlaczego nie wystarczy sam pomiar
+
+Jeżeli korzystamy wyłącznie z pomiaru, to:
+
+- wynik mocno reaguje na szum,
+- trajektoria bywa poszarpana,
+- trudno estymować wielkości niewidoczne bezpośrednio, np. prędkość.
+
+Jeżeli korzystamy wyłącznie z modelu, to:
+
+- błąd modelu może narastać,
+- układ może „odpłynąć” od rzeczywistości.
+
+## Krótki przykład intuicyjny
+
+Wyobraźmy sobie samochód jadący po prostej drodze:
+
+- model przewiduje, że po sekundzie auto powinno być trochę dalej,
+- GPS podaje nową pozycję, ale z błędem,
+- filtr koryguje przewidywanie tak, aby nowa estymata była rozsądna.
+
+W praktyce zamiast „skakania” między kolejnymi punktami
+otrzymujemy gładszy i bardziej wiarygodny opis ruchu.
+
+# Model liniowy
+
+## Liniowy model stanu
+
+W klasycznym, dyskretnym modelu liniowym zapisujemy układ jako:
+
+$$
+x_k = A x_{k-1} + B u_k + w_k
+$$
+
+$$
+z_k = H x_k + v_k
+$$
+
+## Znaczenie najważniejszych symboli
+
+- $x_k$ — wektor stanu,
+- $z_k$ — wektor pomiaru,
+- $A$ — macierz przejścia stanu,
+- $H$ — macierz obserwacji.
+
+## Pozostałe elementy modelu
+
+- $B$ — macierz sterowania,
+- $u_k$ — wejście sterujące,
+- $w_k$ — szum procesu,
+- $v_k$ — szum pomiaru.
+
+W wielu prostych przykładach człon $B u_k$ można nawet pominąć.
+
+## Znaczenie macierzy Q i R
+
+Zakładamy zwykle:
+
+$$
+w_k \sim \mathcal{N}(0,Q), \qquad v_k \sim \mathcal{N}(0,R)
+$$
+
+gdzie:
+
+- $Q$ opisuje niepewność modelu,
+- $R$ opisuje niepewność pomiaru.
+
+Interpretacja:
+
+- większe $Q$ $\rightarrow$ mniejsze zaufanie do modelu,
+- większe $R$ $\rightarrow$ mniejsze zaufanie do pomiaru.
+
+## Przykłady modeli liniowych
+
+Typowe przykłady modeli liniowych:
+
+- ruch po prostej ze stałą prędkością,
+- ruch po prostej ze stałym przyspieszeniem,
+- proste modele temperatury, poziomu cieczy lub sygnału elektrycznego,
+- śledzenie obiektu, gdy stan i pomiar zależą liniowo od siebie.
+
+## Co oznacza wektor stanu
+
+Wektor stanu nie musi zawierać tylko tego, co mierzymy bezpośrednio.
+Może on zawierać także wielkości ukryte, na przykład:
+
+- pozycję i prędkość,
+- pozycję, prędkość i przyspieszenie,
+- stan naładowania baterii,
+- temperaturę wewnętrzną układu,
+- współrzędne ruchu obiektu w 2D lub 3D.
+
+
+# Liniowy filtr Kalmana
+
+## Predykcja
+
+W fazie predykcji liczymy:
+
+$$
+\hat{x}_{k|k-1} = A \hat{x}_{k-1|k-1}
+$$
+
+$$
+P_{k|k-1} = A P_{k-1|k-1} A^T + Q
+$$
+
+## Korekcja
+
+Po otrzymaniu pomiaru $z_k$ liczymy:
+
+$$
+K_k = P_{k|k-1} H^T \left( H P_{k|k-1} H^T + R \right)^{-1}
+$$
+
+$$
+\hat{x}_{k|k} = \hat{x}_{k|k-1} + K_k \left(z_k - H \hat{x}_{k|k-1}\right)
+$$
+
+$$
+P_{k|k} = (I - K_k H) P_{k|k-1}
+$$
+
+## Interpretacja wzmocnienia Kalmana
+
+Wzmocnienie Kalmana decyduje:
+
+- jak mocno ufamy pomiarowi,
+- jak mocno ufamy modelowi.
+
+Jeśli pomiar jest bardzo dokładny, korekcja jest silniejsza.
+Jeśli pomiar jest słaby, filtr bardziej ufa modelowi.
+
+## Co dzieje się w każdej iteracji
+
+W każdym kroku czasowym filtr wykonuje dokładnie tę samą procedurę:
+
+1. bierze poprzednią estymatę,
+2. przewiduje nowy stan z modelu,
+3. odczytuje nowy pomiar,
+4. porównuje pomiar z przewidywaniem,
+5. poprawia estymatę.
+
+Dzięki temu algorytm jest **rekurencyjny**.
+
+## Co oznacza innowacja
+
+W praktyce bardzo ważna jest wielkość:
+
+$$
+z_k - H\hat{x}_{k|k-1}
+$$
+
+czyli różnica między rzeczywistym pomiarem a tym,
+co model przewidywał dla tego pomiaru.
+
+Ta różnica nazywa się **innowacją** lub **resztą pomiarową**.
+
+# Implementacja w Pythonie
+
+## Biblioteki
+
+Do prezentacji i symulacji wystarczą:
+
+- `numpy` — obliczenia macierzowe,
+- `matplotlib` — wykresy.
+
+Opcjonalnie można użyć też biblioteki `FilterPy`,
+która udostępnia gotowe klasy do filtrów Kalmana, w tym EKF.
+
+## Przykład bibliotek i funkcji
+
+Jeżeli chcielibyśmy korzystać z gotowej biblioteki, to zwykle definiujemy:
+
+- wymiar stanu,
+- wymiar pomiaru,
+- macierze `F`, `H`, `Q`, `R`,
+- stan początkowy `x`,
+- macierz kowariancji `P`.
+
+Następnie w każdej iteracji wykonujemy kroki podobne do:
+
+- `predict()`
+- `update(z)`
+
+## Import bibliotek {.smaller}
+
+```{python}
+#| label: setup
+import numpy as np
+import matplotlib.pyplot as plt
+
+np.random.seed(42)
+plt.rcParams["figure.figsize"] = (10, 5)
+```
+
+# Symulacja liniowa
+
+## Założenia przykładu liniowego
+
+Rozważamy ruch 1D.
+
+Wektor stanu:
+
+$$
+x_k =
+\begin{bmatrix}
+pozycja \\
+prędkość
+\end{bmatrix}
+$$
+
+Pomiar dotyczy tylko pozycji.
+
+## Model przykładu liniowego
+
+Model ma postać:
+
+$$
+x_k = A x_{k-1} + w_k,
+\qquad
+z_k = H x_k + v_k
+$$
+
+Czyli filtr ma odtworzyć położenie i prędkość
+na podstawie zaszumionych pomiarów położenia.
+
+## Generowanie danych {.smaller}
+
+```{python}
+#| label: linear-data
+dt = 1.0
+n = 60
+
+A = np.array([
+    [1, dt],
+    [0, 1]
+])
+
+H = np.array([[1, 0]])
+
+Q = np.array([
+    [0.05, 0.0],
+    [0.0, 0.02]
+])
+
+R = np.array([[4.0]])
+
+x_true = np.zeros((n, 2))
+z = np.zeros(n)
+
+x_true[0] = np.array([0.0, 1.0])
+
+for k in range(1, n):
+    w = np.random.multivariate_normal(mean=[0, 0], cov=Q)
+    x_true[k] = A @ x_true[k - 1] + w
+
+for k in range(n):
+    v = np.random.normal(0, np.sqrt(R[0, 0]))
+    z[k] = (H @ x_true[k])[0] + v
+```
+
+## Własna implementacja liniowego filtru Kalmana {.smaller}
+
+```{python}
+#| label: linear-kf
+def kalman_filter_linear(z, A, H, Q, R, x0, P0):
+    n = len(z)
+    state_dim = x0.shape[0]
+
+    x_est = np.zeros((n, state_dim))
+    P_hist = np.zeros((n, state_dim, state_dim))
+
+    x = x0.copy()
+    P = P0.copy()
+
+    for k in range(n):
+        # predykcja
+        x_pred = A @ x
+        P_pred = A @ P @ A.T + Q
+
+        # korekcja
+        y = np.array([z[k]]) - H @ x_pred
+        S = H @ P_pred @ H.T + R
+        K = P_pred @ H.T @ np.linalg.inv(S)
+
+        x = x_pred + K @ y
+        P = (np.eye(state_dim) - K @ H) @ P_pred
+
+        x_est[k] = x
+        P_hist[k] = P
+
+    return x_est, P_hist
+
+
+x0 = np.array([0.0, 0.0])
+P0 = np.array([
+    [10.0, 0.0],
+    [0.0, 10.0]
+])
+
+x_est, P_hist = kalman_filter_linear(z, A, H, Q, R, x0, P0)
+```
+
+## Wyniki symulacji liniowej
+
+```{python}
+#| label: linear-plot
+#| echo: false
+#| fig-width: 8
+#| fig-height: 4.5
+t = np.arange(n)
+
+plt.plot(t, x_true[:, 0], label="Prawdziwa pozycja")
+plt.scatter(t, z, s=18, label="Pomiary zaszumione")
+plt.plot(t, x_est[:, 0], label="Estymata KF")
+plt.xlabel("krok")
+plt.ylabel("pozycja")
+plt.title("Liniowy filtr Kalmana - estymacja położenia")
+plt.legend()
+plt.grid(True)
+plt.show()
+```
+
+## Porównanie: pomiar i estymata
+
+W przykładzie liniowym warto zwrócić uwagę na trzy obiekty na wykresie:
+
+- **prawdziwy stan** — trajektoria idealna,
+- **pomiar** — dane zaburzone szumem,
+- **estymata KF** — wynik po połączeniu modelu i pomiaru.
+
+## Wniosek z przykładu liniowego
+
+Na wykresie powinniśmy zobaczyć, że:
+
+- pomiary są rozrzucone przez szum,
+- estymata filtru jest znacznie gładsza,
+- filtr dobrze odtwarza trend ruchu obiektu.
+
+# Model nieliniowy
+
+## Kiedy pojawia się nieliniowość
+
+Nie wszystkie układy da się dobrze opisać liniowo.
+Jeżeli chcemy modelować bardziej realistyczne sytuacje, to często musimy wprowadzić nieliniowość, na przykład:
+
+- pojawia się kąt i funkcje trygonometryczne,
+- obiekt porusza się po łuku w modelu geometrycznym,
+- pomiar nie daje bezpośrednio współrzędnych $(x,y)$.
+
+
+## Przykłady nieliniowości
+
+Sytuacje, w których model lub pomiar stają się nieliniowe:
+
+- pomiar odległości $r = \sqrt{x^2 + y^2}$,
+- pomiar kąta $\theta = \arctan2(y,x)$,
+- modele orbitalne,
+- modele elektrochemiczne baterii,
+- bardziej złożone modele ruchu pojazdu, motocykla lub drona.
+
+## Nieliniowy model stanu
+
+Model nieliniowy zapisujemy jako:
+
+$$
+x_k = f(x_{k-1}) + w_k
+$$
+
+$$
+z_k = h(x_k) + v_k
+$$
+
+## Skąd bierze się nieliniowość w praktyce
+
+Nieliniowość pojawia się wtedy, gdy:
+
+- opisujemy ruch przez **kąt jazdy**, **skręt** albo **promień łuku**,
+- przechodzimy między układem kamery a układem toru przez bardziej złożoną geometrię,
+- pomiar nie daje od razu współrzędnych $(x,y)$,
+- model dynamiki zawiera zależności trygonometryczne.
+
+# Extended Kalman Filter
+
+## Idea EKF
+
+Klasyczny filtr Kalmana działa dla modeli liniowych.
+
+Dla modeli nieliniowych stosujemy **Extended Kalman Filter (EKF)**, który:
+
+- linearyzuje model lokalnie,
+- wykorzystuje macierze Jacobiego,
+- zachowuje schemat: predykcja i korekcja.
+
+## Intuicja linearyzacji
+
+W EKF nie rozwiązujemy całego problemu nieliniowego dokładnie.
+Zamiast tego:
+
+- bierzemy aktualny punkt pracy,
+- przybliżamy funkcje nieliniowe liniowo w jego otoczeniu,
+- wykonujemy krok podobny do klasycznego filtru Kalmana.
+
+## Jacobiany w EKF
+
+Dla funkcji:
+
+$$
+x_k = f(x_{k-1}) + w_k, \qquad z_k = h(x_k) + v_k
+$$
+
+zamiast stałych macierzy używamy lokalnych przybliżeń:
+
+$$
+F_k = \frac{\partial f}{\partial x}, \qquad
+H_k = \frac{\partial h}{\partial x}
+$$
+
+obliczanych w aktualnym punkcie pracy.
+
+# Symulacja nieliniowa
+
+## Założenia przykładu EKF
+
+Rozważamy ruch obiektu w 2D.
+
+Stan:
+
+$$
+x_k =
+\begin{bmatrix}
+x \\
+y \\
+v_x \\
+v_y
+\end{bmatrix}
+$$
+
+Pomiar jest nieliniowy i zawiera:
+
+- odległość od początku układu,
+- kąt.
+
+## Generowanie danych dla EKF {.smaller}
+
+```{python}
+#| label: ekf-data
+np.random.seed(123)
+
+dt = 1.0
+n2 = 80
+
+F = np.array([
+    [1, 0, dt, 0],
+    [0, 1, 0, dt],
+    [0, 0, 1,  0],
+    [0, 0, 0,  1]
+])
+
+Q_ekf = np.diag([0.02, 0.02, 0.01, 0.01])
+R_ekf = np.diag([4.0, (np.deg2rad(2))**2])
+
+x_true_ekf = np.zeros((n2, 4))
+z_ekf = np.zeros((n2, 2))
+
+x_true_ekf[0] = np.array([0.0, 0.0, 1.2, 0.8])
+
+for k in range(1, n2):
+    w = np.random.multivariate_normal(np.zeros(4), Q_ekf)
+    x_true_ekf[k] = F @ x_true_ekf[k-1] + w
+
+for k in range(n2):
+    px, py, vx, vy = x_true_ekf[k]
+    rng = np.sqrt(px**2 + py**2)
+    ang = np.arctan2(py, px)
+    noise = np.random.multivariate_normal(np.zeros(2), R_ekf)
+    z_ekf[k] = np.array([rng, ang]) + noise
+```
+
+## Funkcja pomiaru i Jacobian {.smaller}
+
+```{python}
+#| label: ekf-functions
+def h_nonlinear(x):
+    px, py, vx, vy = x
+    r = np.sqrt(px**2 + py**2)
+    theta = np.arctan2(py, px)
+    return np.array([r, theta])
+
+
+def jacobian_h(x):
+    px, py, vx, vy = x
+    r2 = px**2 + py**2
+    r2 = max(r2, 1e-9)
+    r = np.sqrt(r2)
+
+    return np.array([
+        [px / r,        py / r,        0.0, 0.0],
+        [-py / r2,      px / r2,       0.0, 0.0]
+    ])
+
+
+def wrap_angle(a):
+    return (a + np.pi) % (2 * np.pi) - np.pi
+```
+
+## Implementacja EKF {.smaller}
+
+```{python}
+#| label: ekf-code
+def extended_kalman_filter(z, F, Q, R, x0, P0):
+    n = len(z)
+    dim_x = len(x0)
+
+    x_est = np.zeros((n, dim_x))
+    x = x0.copy()
+    P = P0.copy()
+
+    for k in range(n):
+        # predykcja
+        x_pred = F @ x
+        P_pred = F @ P @ F.T + Q
+
+        # linearyzacja pomiaru
+        Hk = jacobian_h(x_pred)
+
+        # innowacja
+        y = z[k] - h_nonlinear(x_pred)
+        y[1] = wrap_angle(y[1])
+
+        # korekcja
+        S = Hk @ P_pred @ Hk.T + R
+        K = P_pred @ Hk.T @ np.linalg.inv(S)
+
+        x = x_pred + K @ y
+        P = (np.eye(dim_x) - K @ Hk) @ P_pred
+
+        x_est[k] = x
+
+    return x_est
+
+
+r0, th0 = z_ekf[0]
+x0_ekf = np.array([
+    r0 * np.cos(th0),
+    r0 * np.sin(th0),
+    0.0,
+    0.0
+])
+
+P0_ekf = np.diag([10.0, 10.0, 2.0, 2.0])
+
+x_est_ekf = extended_kalman_filter(z_ekf, F, Q_ekf, R_ekf, x0_ekf, P0_ekf)
+
+meas_xy = np.column_stack([
+    z_ekf[:, 0] * np.cos(z_ekf[:, 1]),
+    z_ekf[:, 0] * np.sin(z_ekf[:, 1])
+])
+```
+
+## Wyniki symulacji EKF
+
+```{python}
+#| label: ekf-plot
+#| echo: false
+#| fig-width: 7
+#| fig-height: 5
+plt.plot(x_true_ekf[:, 0], x_true_ekf[:, 1], label="Prawdziwa trajektoria")
+plt.scatter(meas_xy[:, 0], meas_xy[:, 1], s=15, label="Pomiary nieliniowe")
+plt.plot(x_est_ekf[:, 0], x_est_ekf[:, 1], label="Estymata EKF")
+plt.xlabel("x")
+plt.ylabel("y")
+plt.title("Extended Kalman Filter - trajektoria 2D")
+plt.legend()
+plt.grid(True)
+plt.axis("equal")
+plt.show()
+```
+
+## Co pokazuje przykład EKF
+
+W tym przykładzie nie obserwujemy bezpośrednio współrzędnych $(x,y)$,
+tylko bardziej pośrednie wielkości: odległość i kąt.
+
+Mimo to filtr potrafi odzyskać przybliżoną trajektorię obiektu w 2D.
+
+## Wniosek z przykładu EKF
+
+W modelu nieliniowym:
+
+- same pomiary są trudniejsze do interpretacji,
+- EKF lokalnie linearyzuje problem,
+- pozwala mimo to uzyskać dobrą estymację trajektorii.
+
+# Zastosowania
+
+## Gdzie stosuje się filtr Kalmana
+
+Typowe zastosowania:
+
+- GPS i nawigacja,
+- śledzenie obiektów,
+- radar i systemy sterowania,
+- przetwarzanie sygnałów,
+- robotyka,
+- estymacja trajektorii ruchu.
+
+## Konkretne przykłady zastosowań
+
+Przykłady, które można pokazać na prezentacji:
+
+- **GPS i nawigacja** — odszumianie pozycji pojazdu,
+- **lotnictwo i kosmonautyka** — estymacja trajektorii lotu,
+- **robotyka mobilna** — lokalizacja robota w przestrzeni,
+- **radar i tracking** — śledzenie samolotów, dronów lub innych obiektów,
+- **computer vision i sport** — śledzenie zawodnika na podstawie obrazu z kilku kamer.
+
+# Ograniczenia i rozwinięcia
+
+## Ograniczenia klasycznego podejścia
+
+Trzeba pamiętać, że:
+
+- filtr działa dobrze tylko przy sensownym modelu,
+- zły dobór $Q$ i $R$ pogarsza wyniki,
+- EKF opiera się na linearyzacji lokalnej,
+- przy silnej nieliniowości mogą być potrzebne inne metody.
+
+## Możliwe rozwinięcia
+
+Dalsze kierunki:
+
+- Unscented Kalman Filter,
+- filtry cząsteczkowe,
+- metody odporne na niepewność modelu,
+- estymacja parametrów układu.
+
+# Podsumowanie teorii
+
+## Najważniejsze rozróżnienie przed projektem
+
+Przed przejściem do naszego zastosowania warto zapamiętać jedną rzecz:
+
+- **KF** stosujemy, gdy model i pomiar są liniowe,
+- **EKF** stosujemy, gdy pojawia się nieliniowość.
+
+# Projekt Falubaz
+
+## Cel projektu Falubaz
+
+Celem projektu jest estymacja pozycji zawodnika na torze żużlowym
+na podstawie obrazu z **3 kamer**.
+
+Nie chcemy tylko wykrywać zawodnika na pojedynczej klatce,
+ale uzyskać:
+
+- stabilną pozycję zawodnika na torze,
+- płynną trajektorię ruchu,
+- estymację prędkości,
+- w dalszym kroku także estymację przyspieszenia,
+- odporność na chwilowe błędy detekcji i zasłonięcia.
+
+## Pipeline projektu Falubaz
+
+Pipeline wygląda następująco:
+
+1. z każdej kamery pobieramy kolejne klatki filmu,
+2. wybieramy reprezentatywny punkt pozycji,
+3. przeliczamy punkt do wspólnego układu toru,
+4. przekazujemy pomiary do filtru Kalmana.
+
+## Co jest pomiarem
+
+W takim zadaniu **pomiar** to to, co dostajemy z analizy obrazu:
+
+$$
+z_k^{(i)} =
+\begin{bmatrix}
+x_k^{(i)} \\
+y_k^{(i)}
+\end{bmatrix}
+$$
+
+czyli pozycja zawodnika wyznaczona przez **i-tą kamerę**
+po przeliczeniu na układ toru.
+
+## Stan układu — wersja podstawowa
+
+Najprostsza wersja stanu ma postać:
+
+$$
+x_k =
+\begin{bmatrix}
+x_k \\
+y_k \\
+v_{x,k} \\
+v_{y,k}
+\end{bmatrix}
+$$
+
+W tej wersji filtr estymuje:
+
+- pozycję w 2D,
+- prędkość w 2D.
+
+## Stan układu — wersja rozszerzona
+
+Jeżeli chcemy dodać przyspieszenie, możemy rozszerzyć stan do postaci:
+
+$$
+x_k =
+\begin{bmatrix}
+x_k \\
+y_k \\
+v_{x,k} \\
+v_{y,k} \\
+a_{x,k} \\
+a_{y,k}
+\end{bmatrix}
+$$
+
+Wtedy filtr może estymować nie tylko pozycję i prędkość,
+ale także przyspieszenie zawodnika.
+
+## Macierz przejścia dla modelu z przyspieszeniem
+
+Dla rozszerzonego modelu można przyjąć:
+
+$$
+A=
+\begin{bmatrix}
+1 & 0 & \Delta t & 0 & \tfrac12 \Delta t^2 & 0 \\
+0 & 1 & 0 & \Delta t & 0 & \tfrac12 \Delta t^2 \\
+0 & 0 & 1 & 0 & \Delta t & 0 \\
+0 & 0 & 0 & 1 & 0 & \Delta t \\
+0 & 0 & 0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 0 & 0 & 1
+\end{bmatrix}
+$$
+
+## Dlaczego 3 kamery są ważne
+
+W projekcie wielokamerowym pojawiają się typowe problemy:
+
+- zawodnik może być zasłonięty w jednej kamerze,
+- detekcja może drgać między klatkami,
+- perspektywa każdej kamery jest inna,
+- dokładność pomiaru zależy od kąta patrzenia i odległości.
+
+Właśnie tutaj filtr Kalmana daje dużą przewagę.
+
+## Model pomiaru z wielu kamer
+
+Jeżeli każda kamera po kalibracji zwraca pozycję zawodnika
+w tym samym układzie toru,
+to pomiar ma postać liniową:
+
+$$
+z_k^{(i)} = H x_k + v_k^{(i)}
+$$
+
+## Macierz H dla modelu pozycji i prędkości
+
+Dla modelu pozycji i prędkości:
+
+$$
+H =
+\begin{bmatrix}
+1 & 0 & 0 & 0 \\
+0 & 1 & 0 & 0
+\end{bmatrix}
+$$
+
+## Macierz H dla modelu z przyspieszeniem
+
+Dla modelu z przyspieszeniem:
+
+$$
+H =
+\begin{bmatrix}
+1 & 0 & 0 & 0 & 0 & 0 \\
+0 & 1 & 0 & 0 & 0 & 0
+\end{bmatrix}
+$$
+
+## Różne macierze niepewności dla kamer
+
+Każda kamera może mieć własną macierz szumu pomiarowego:
+
+$$
+R_1,\; R_2,\; R_3
+$$
+
+Jeżeli jedna kamera patrzy pod gorszym kątem albo częściej traci obiekt,
+to jej macierz $R$ powinna być większa,
+czyli filtr będzie jej mniej ufał.
+
+## Jak łączymy dane z 3 kamer w praktyce
+
+W każdej chwili czasu można zrobić to tak:
+
+1. wykonujemy **predykcję** stanu,
+2. bierzemy pomiar z kamery 1 i robimy korekcję,
+3. bierzemy pomiar z kamery 2 i robimy kolejną korekcję,
+4. bierzemy pomiar z kamery 3 i robimy kolejną korekcję.
+
+## Dlaczego taka aktualizacja jest wygodna
+
+To rozwiązanie jest wygodne, bo:
+
+- gdy jedna kamera chwilowo nie widzi zawodnika, nadal możemy użyć pozostałych,
+- gdy dwie kamery dają podobny wynik, filtr wzmacnia pewność estymaty,
+- gdy jeden pomiar jest wyraźnie gorszy, filtr nie musi za nim ślepo podążać.
+
+## Rola modeli YOLO i SAM
+
+Same modele YOLO i SAM **nie rozwiązują problemu śledzenia w czasie**.
+One dostarczają pomiary z pojedynczych klatek.
+
+Ich role można streścić tak:
+
+- **YOLO** lokalizuje zawodnika lub motocykl,
+- **SAM** doprecyzowuje maskę obiektu,
+- filtr Kalmana łączy kolejne pomiary w trajektorię.
+
+## Co daje filtr Kalmana w projekcie Falubaz
+
+W naszym projekcie filtr Kalmana może pełnić kilka ról jednocześnie:
+
+- **wygładzanie trajektorii**,
+- **fuzja danych z 3 kamer**,
+- **uzupełnianie braków** przy chwilowym braku pomiaru,
+- **estymacja prędkości**,
+- **estymacja przyspieszenia** po rozszerzeniu stanu.
+
+## Kiedy w projekcie Falubaz wystarczy zwykły KF
+
+Zwykły liniowy KF wystarczy wtedy, gdy:
+
+- dla każdej kamery wykonamy kalibrację,
+- punkt z obrazu przeliczymy do wspólnego układu toru,
+- stan opiszemy liniowo,
+- pomiar będzie dawał bezpośrednio współrzędne $(x,y)$ na torze.
+
+## Kiedy w projekcie Falubaz bardziej pasuje EKF
+
+EKF staje się naturalny, gdy chcemy modelować coś bardziej realistycznego,
+na przykład:
+
+- ruch motocykla po łuku z użyciem kąta jazdy,
+- zależność prędkości od kierunku ruchu,
+- skręt i zmianę orientacji,
+- pomiar w postaci odległości, kąta lub innych wielkości pośrednich,
+- nieliniowe przejście między układem obrazu a stanem.
+
+## Jak dobrać punkt reprezentujący pozycję zawodnika
+
+Z obrazu można wyznaczać na przykład:
+
+- środek bounding boxa,
+- środek maski z SAM,
+- punkt odpowiadający tylnej części motocykla,
+- punkt styku motocykla z torem.
+
+Najlepiej wybrać taki punkt,
+który ma sens geometryczny po przeliczeniu na płaszczyznę toru
+i będzie stabilny między klatkami.
+
+## Co można pokazać jako wynik projektu
+
+Na końcu projektu Falubaz można pokazać:
+
+- pozycje z każdej kamery osobno,
+- trajektorię po przeliczeniu do układu toru,
+- trajektorię po filtracji,
+- porównanie: surowe detekcje vs estymata KF,
+- wykres prędkości zawodnika w czasie,
+- wykres przyspieszenia zawodnika w czasie,
+- zachowanie filtru przy chwilowym zaniku pomiaru.
+
+# Bibliografia
+
+## Literatura
+
+- Karol Niewiadomski, *Liniowe i nieliniowe filtry Kalmana*
+- Chui, Chen, *Kalman Filtering with Real-Time Applications*
+- Petersen, Savkin, *Robust Kalman Filtering for Signals and Systems with Large Uncertainties*
